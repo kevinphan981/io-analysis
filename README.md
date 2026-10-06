@@ -7,6 +7,12 @@ DBEDT publishes their IO tables every five years or so, with the latest release 
 
 Anyone also familiar with these models know that the Burea of Economic Analysis (BEA) also publishes national-level tables that are also quite useful. This repository does not focus on that. 
 
+
+## TODO
+1. I need to do a front-end? Maybe something simple like streamlit
+2. Needs to do both the intercounty and condensed and uncondensed state... though given that it's all automated we can just do uncondensed. 
+
+
 ## Structure
 
 ```
