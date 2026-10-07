@@ -17,7 +17,7 @@ Overview
 TODO:
 ----
     1. Needs to actually have the industry within the shock_params, will have to reconsider when the other shocks are developed.
-    2. 
+    2. Hmmmm.... this will be harder to consider
     
 '''
 
