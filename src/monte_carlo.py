@@ -54,12 +54,10 @@ def monte_carlo(A_matrix: pd.DataFrame, shock_params: dict, n_iterations: int = 
             # in other words, i feel like its biased to not include negative cases
             draws = np.random.normal(mean, std, n_iterations)
             # shock_samples[i, :] = np.clip(draws, a_min = 0, a_max = None)
-            shock_samples = draws
+            shock_samples = draws    
+    
+    # should add in some things 
+    return shock_samples * leontief
 
 
 
-
-        
-
-        
-    return
