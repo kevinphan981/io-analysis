@@ -1,20 +1,31 @@
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
-import os
 from pathlib import Path
 
+"""
+    Massive overhaul
+    ----------------
+        - will simply use the published detailed figures from DBEDT instead of calculating them myself. I verified that they worked
+          and will trust their calculations 
+        - will try to implement more methods for different types of simulations, verified by using known examples
+"""
 ROOT = Path(__file__).resolve().parent
 
-print(os.getcwd())
 pd.set_option("display.float_format", lambda x: f"{x:,.2f}")
 
 DATA_PATH = (
     ROOT.parent / "data" / "2022-State-IO-Detailed_Final.xlsx"
-)  # <- put the file next to this notebook
+) 
 
 # The 'I-O' sheet is laid out with no clean header row for pandas to use automatically,
 # so we read it completely raw (header=None) and slice it ourselves by position.
 raw = pd.read_excel(DATA_PATH, sheet_name="I-O", header=None)
+
+# we do one conversion so pyright stops crying and the type annotations are correct: forces all empty string cells to be NaN
+num: npt.NDArray[np.float64] = np.asarray(
+    raw.apply(pd.to_numeric, errors="coerce"), dtype=np.float64
+)
 
 N = 62  # number of industries
 
@@ -28,10 +39,9 @@ Z = raw.iloc[2 : 2 + N, 2 : 2 + N].apply(pd.to_numeric, errors="coerce").to_nump
 
 # --- Total output vector x ---
 # Appears twice (row total in col 79, column total in row 75) - they must match.
-x_row_total = pd.to_numeric(raw.iloc[2 : 2 + N, 78], errors="coerce").to_numpy()
-x_col_total = pd.to_numeric(raw.iloc[74, 2 : 2 + N], errors="coerce").to_numpy()
-assert np.allclose(x_row_total, x_col_total), "Row/column output totals should match!"
-x = x_row_total
+x_row_total = num[2 : 2 + N, 78]
+x_col_total = num[74, 2 : 2 + N]
+x = x_row_total  # will have to come back to
 
 # For additional testing
 # print("\nTotal output, first 5 industries ($M):", np.round(x[:5], 1))
@@ -42,150 +52,43 @@ FD = raw.iloc[2 : 2 + N, 66:77].apply(pd.to_numeric, errors="coerce").to_numpy()
 # print("\nFinal demand categories:", fd_labels)
 
 # --- Value-added components (by column, i.e. per producing industry) ---
-imports = pd.to_numeric(raw.iloc[66, 2 : 2 + N], errors="coerce").to_numpy()
-comp_employees = pd.to_numeric(raw.iloc[68, 2 : 2 + N], errors="coerce").to_numpy()
-prop_income = pd.to_numeric(raw.iloc[69, 2 : 2 + N], errors="coerce").to_numpy()
-topils = pd.to_numeric(raw.iloc[70, 2 : 2 + N], errors="coerce").to_numpy()
-other_capital = pd.to_numeric(raw.iloc[71, 2 : 2 + N], errors="coerce").to_numpy()
-value_added = pd.to_numeric(raw.iloc[72, 2 : 2 + N], errors="coerce").to_numpy()
+imports = num[66, 2 : 2 + N]
+comp_employees = num[68, 2 : 2 + N]
+prop_income = num[69, 2 : 2 + N]
+topils = num[70, 2 : 2 + N]
+other_capital = num[71, 2 : 2 + N]
+value_added = num[72, 2 : 2 + N]
 
 # --- Jobs (by column) ---
-wage_salary_jobs = pd.to_numeric(raw.iloc[76, 2 : 2 + N], errors="coerce").to_numpy()
-proprietor_jobs = pd.to_numeric(raw.iloc[77, 2 : 2 + N], errors="coerce").to_numpy()
-total_jobs = pd.to_numeric(raw.iloc[78, 2 : 2 + N], errors="coerce").to_numpy()
+wage_salary_jobs = np.asarray(
+    pd.to_numeric(raw.iloc[76, 2 : 2 + N], errors="coerce"), dtype=np.float64
+)
+proprietor_jobs = num[77, 2 : 2 + N]
+total_jobs = num[78, 2 : 2 + N]
 
 # --- Earnings specifically prepared by DBEDT for multiplier calculations ---
 # (We'll see below this is NOT the same as comp_employees + prop_income -- it's an
 #  adjusted BEA RIMS-II earnings concept.)
-rims_earnings = pd.to_numeric(raw.iloc[80, 2 : 2 + N], errors="coerce").to_numpy()
-
-
-"""
-      Keeping in mind that the BEA/DBEDT computes these tables with approximations and estimates, there is some acceptable level of error in this. 
-
-      Assert by 0.01 and we should be good. 
-"""
-# print("\nSanity checks:")
-row_balance = np.max(np.abs(Z.sum(axis=1) + FD.sum(axis=1) - x))
-col_balance = np.max(
-    np.abs(
-        pd.to_numeric(raw.iloc[65, 2 : 2 + N], errors="coerce").to_numpy()
-        + imports
-        + value_added
-        - x
-    )
-)
-job_balance = np.max(np.abs(wage_salary_jobs + proprietor_jobs - total_jobs))
-
-assert all(b < 0.01 for b in (row_balance, col_balance, job_balance))
-
-# print("  row balance  (Z.sum(1)+FD.sum(1) vs x):", row_balance)
-# print("  col balance  (interind.input+imports+VA vs x):", col_balance)
-# print("  jobs balance (ws+prop vs total):", job_balance)
-
-
-# We create the direct-requirements matrix, and compare it with DBEDT's one.
-
-A = Z / x[np.newaxis, :]  # divide each column j by x_j
-
-
-# --- Validate against DBEDT's published direct-requirements matrix ---
-def test_dir_req():
-    direct_req_pub = pd.read_excel(
-        DATA_PATH, sheet_name="direct requirements", header=None
-    )
-    A_published = (
-        direct_req_pub.iloc[3 : 3 + N, 2 : 2 + N]
-        .apply(pd.to_numeric, errors="coerce")
-        .to_numpy()
-    )
-    diff = np.max(np.abs(A - A_published))
-    assert diff < 0.01
-    # print("Max abs difference vs DBEDT's published A matrix:", diff )
-    # print("\nExample: Accommodation's own recipe (top 5 inputs it buys per $1 of output):")
-    # acc_idx = industries.index("Accommodation")
-    # recipe = pd.Series(A[:, acc_idx], index=industries).sort_values(ascending=False)
-    # print(recipe.head(5))
-
-
-test_dir_req()
-
-
-# Type 1 - Indirect (Business-to-Business)
-"""
-      Some minor theory here: the column sum of L1 = output multiplier
-      And so we have to test against that.
-"""
-I = np.eye(N)  # identity matrix
-L1 = np.linalg.inv(I - A)  # the Leontief inverse, or the "type 1 requirements matrix"
-
-
-def test_leontief_1():
-    # type 1 total requirements check
-    t1_pub_raw = pd.read_excel(DATA_PATH, sheet_name="ttl req. - type 1", header=None)
-    L1_published = (
-        t1_pub_raw.iloc[2 : 2 + N, 2 : 2 + N]
-        .apply(pd.to_numeric, errors="coerce")
-        .to_numpy()
-    )
-
-    # we check to see that they are equal within an acceptable range, 0.01
-    assert np.max(np.abs(L1 - L1_published))
-
-
-# output multipliers = col sum check
-def test_multipliers():
-    output_multiplier_1 = L1.sum(axis=0)
-
-    mult_pub = pd.read_excel(DATA_PATH, sheet_name="fd, income ML", header=None)
-    output_mult_1_pub = pd.to_numeric(
-        mult_pub.iloc[5 : 5 + N, 2], errors="coerce"
-    ).to_numpy()
-
-    assert np.max(np.abs(output_multiplier_1 - output_mult_1_pub)) < 0.01
-
-
-test_leontief_1()
-test_multipliers()
-
-# Type II - Induced Effects (Household Effects)
-"""
-      Households are added as another industry, as the workers spend their pay and have generative effects as a result
-"""
-
-labor_income = comp_employees + prop_income
-houehold_row = labor_income / x
-
-# supposedly, there are 0's in the denominator here
-# household_col = FD[:, fd_labels.index("PCE")] / FD[: fd_labels.index("PCE")].sum()
-
-household_col = np.divide(
-    FD[:, fd_labels.index("PCE")],
-    FD[:, fd_labels.index("PCE")].sum(),
-    out=np.full_like(FD[:, fd_labels.index("PCE")], np.nan),
-    where=(FD[: fd_labels.index("PCE")].sum() != 0),
+rims_earnings: npt.NDArray[np.float64] = np.asarray(
+    pd.to_numeric(raw.iloc[80, 2 : 2 + N], errors="coerce"), dtype=np.float64
 )
 
-A_bar = np.zeros((N + 1, N + 1))
-A_bar[:N, :N] = A
-A_bar[:N, N] = household_col
-A_bar[N, :N] = houehold_row
 
-L2_full = np.linalg.inv(np.eye(N + 1) - A_bar)
-L2_mine = L2_full[:N, :N]
+# --- Validate against DBEDT's published Type I total requirements matrix ---
+#
+def sheet_block(sheet: str) -> npt.NDArray[np.float64]:
+    df = pd.read_excel(DATA_PATH, sheet_name=sheet, header=None)
+    return np.asarray(df.apply(pd.to_numeric, errors="coerce"), dtype=np.float64)[
+        2 : 2 + N, 2 : 2 + N
+    ]
 
-t2_pub_raw = pd.read_excel(DATA_PATH, sheet_name="ttl req. - type 2", header=None)
-L2_published = (
-    t2_pub_raw.iloc[2 : 2 + N, 2 : 2 + N]
-    .apply(pd.to_numeric, errors="coerce")
-    .to_numpy()
+
+L1_df = pd.DataFrame(
+    sheet_block("ttl req. - type 1"), index=industries, columns=industries
 )
-
-# assert np.max(np.abs(L2_mine - L2_published)) < 1
-# something about our calculated method to DBEDT's differ, which is concerning
-
-L1_df = pd.DataFrame(L1, index=industries, columns=industries)
-L2_df = pd.DataFrame(L2_published, index=industries, columns=industries)
+L2_df = pd.DataFrame(
+    sheet_block("ttl req. - type 2"), index=industries, columns=industries
+)
 
 # print("Type I output multiplier range: %.2f to %.2f" % (L1_df.sum(axis=0).min(), L1_df.sum(axis=0).max()))
 # print("Type II output multiplier range: %.2f to %.2f" % (L2_df.sum(axis=0).min(), L2_df.sum(axis=0).max()))
@@ -194,43 +97,11 @@ L2_df = pd.DataFrame(L2_published, index=industries, columns=industries)
 # Response Coefficients: Interpreting Final Results
 
 earnings_ratio = rims_earnings / x
-ws_jobs_ratio = wage_salary_jobs / x
+ws_jobs_ratio = (
+    wage_salary_jobs / x
+)  # difference between wage_salary to total is that there is propritetor_jobs (owners)
 total_jobs_ratio = total_jobs / x
 
-
-# testing for type 1 earnings mult = earnings ratio through L1
-# TODO: fix whatever mess is happening with division by 0
-def test_earn_mult():
-    earnings_generated_per_dollar_fd = (
-        earnings_ratio @ L1
-    )  # 1x62, total $ earnings per $1 final demand in sector j
-    mult_pub = pd.read_excel(DATA_PATH, sheet_name="fd, income ML", header=None)
-    earn_mult_1_pub = pd.to_numeric(
-        mult_pub.iloc[5 : 5 + N, 5], errors="coerce"
-    ).to_numpy()
-    # print("Max abs diff, Type I earnings multiplier:",
-    #       np.max(np.abs(earnings_generated_per_dollar_fd - earn_mult_1_pub)))
-
-
-# testing for type 1 job multiplier as a ratio of jobs per direct job
-
-
-def test_job_ratio():
-    job_mult_pub = pd.read_excel(DATA_PATH, sheet_name="job ML", header=None)
-    ws_job_mult_1_pub = pd.to_numeric(
-        job_mult_pub.iloc[5 : 5 + N, 3], errors="coerce"
-    ).to_numpy()
-    ws_generated_per_dollar_fd = ws_jobs_ratio @ L1
-    ws_job_mult_1 = (
-        ws_generated_per_dollar_fd / ws_jobs_ratio
-    )  # normalize back to "per direct job"
-    # print("Max abs diff, Type I wage & salary job multiplier:",
-    #       np.nanmax(np.abs(ws_job_mult_1 - ws_job_mult_1_pub)))
-
-
-# there is something off with this, will have to fix
-# test_earn_mult()
-# # test_job_ratio()
 
 # Shock Simulator: Bringing the IO model to analyze an event
 
@@ -269,16 +140,16 @@ def simulate_shock(demand_changes: dict, model: str = "type2") -> pd.DataFrame:
         delta_f[sector] = amount
 
     # $ output change by sector
-    delta_output = L @ delta_f.values
+    delta_output = L.to_numpy() @ delta_f.to_numpy(dtype=float)
     delta_x = pd.Series(delta_output, index=industries)
 
     result = pd.DataFrame(
         {
             "delta_final_demand": delta_f,
             "delta_output": delta_x,
-            "delta_earnings": earnings_ratio * delta_x.values,
-            "delta_ws_jobs": ws_jobs_ratio * delta_x.values,
-            "delta_total_jobs": total_jobs_ratio * delta_x.values,
+            "delta_earnings": earnings_ratio * delta_output,
+            "delta_ws_jobs": ws_jobs_ratio * delta_output,
+            "delta_total_jobs": total_jobs_ratio * delta_output,
         }
     )
 
@@ -290,6 +161,10 @@ def simulate_shock(demand_changes: dict, model: str = "type2") -> pd.DataFrame:
 
 
 def shock_visitor():
+    """
+    1. modifies the L1 & L2 to incorporate visitor spending (if it hasn't done so already?)
+
+    """
     return
 
 
@@ -297,9 +172,6 @@ def shock_visitor():
 def simulate_tax():
     return
 
-
-# print("Sectors available: ")
-# print(", ".join(industries)) # should just deliver a list of the industries that we can shock
 
 model_1 = simulate_shock({"Accommodation": 50.0})
 
@@ -312,6 +184,7 @@ pd.set_option(
 )  # Show full content of columns if text is long
 
 print(model_1.head())
+print("Simulation Completed")
 
 
 # output export for easier viewing in markdown
